@@ -39,7 +39,7 @@ endif()
 if(ANDROID OR IOS)
     find_package(Qt6 COMPONENTS REQUIRED Bluetooth)
 endif()
-find_package(ArcGISRuntime 200.3.0 COMPONENTS REQUIRED Cpp)
+find_package(ArcGISRuntime 200.2.0 COMPONENTS REQUIRED Cpp)
 
 set(SOURCE_FILES
   main.cpp
@@ -102,7 +102,7 @@ if(ANDROID)
   # QtCreator can also be used to install openssl https://doc.qt.io/qtcreator/creator-developing-android.html#specifying-android-device-settings
   # Uncomment below line and point to your openssl path.
 
-  #include(<your_path_to_android_openssl>/CMakeLists.txt)
+  include(~/Applications/android_openssl/CMakeLists.txt)
 
   # QtCreator supports the following variables for Android, which are identical
   # to qmake Android variables.

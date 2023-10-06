@@ -12,33 +12,34 @@
 
 #include "QtAcademyProj.h"
 
-#include "Map.h"
-#include "MapTypes.h"
-#include "MapQuickView.h"
-#include "Viewpoint.h"
-#include "TaskWatcher.h"
-#include "LocationDisplay.h"
-#include "Polygon.h"
-#include "Envelope.h"
-#include "Point.h"
-#include "OfflineMapTask.h"
-#include "GenerateOfflineMapJob.h"
-#include "GenerateOfflineMapParameters.h"
-#include "TaskTypes.h"
+#include "ArcGISVectorTiledLayer.h"
+#include "Basemap.h"
 #include "Error.h"
-#include "ExportVectorTilesTask.h"
+#include "ExportTileCacheTask.h"
 #include "ExportVectorTilesJob.h"
 #include "ExportVectorTilesParameters.h"
-#include "ExportVectorTilesResult.h"
-#include "ArcGISVectorTiledLayer.h"
-#include "LayerListModel.h"
-#include "Basemap.h"
-#include "PortalItem.h"
-#include "VectorTileCache.h"
+#include "ExportVectorTilesTask.h"
+#include "GeometryEngine.h"
+#include "Graphic.h"
+#include "GraphicListModel.h"
+#include "GraphicsOverlay.h"
+#include "GraphicsOverlayListModel.h"
 #include "ItemResourceCache.h"
-#include "ExportTileCacheTask.h"
-#include "VectorTileSourceInfo.h"
-#include "LevelOfDetail.h"
+#include "LayerListModel.h"
+#include "LocationDisplay.h"
+#include "Map.h"
+#include "MapQuickView.h"
+#include "MapTypes.h"
+#include "MapViewTypes.h"
+#include "OfflineMapTask.h"
+#include "Polygon.h"
+#include "SimpleLineSymbol.h"
+#include "SymbolTypes.h"
+#include "VectorTileCache.h"
+#include "Location.h"
+#include "Point.h"
+#include "PolylineBuilder.h"
+#include "SpatialReference.h"
 
 #include <QDir>
 #include <QDirIterator>
@@ -51,13 +52,14 @@
 
 using namespace Esri::ArcGISRuntime;
 
-const QString vtpkPath = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)+"/vtpks";
+const QString vtpkPath = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
 
 QtAcademyProj::QtAcademyProj(QObject* parent /* = nullptr */):
   QObject(parent),
-  m_map(new Map(this))
+  m_map(new Map(this)),
+  m_basemap(new Basemap(BasemapStyle::OsmStandard, this))
 {
-  toggleOffline(false);
+  m_map->setBasemap(m_basemap);
 }
 
 QtAcademyProj::~QtAcademyProj()
@@ -68,66 +70,54 @@ void QtAcademyProj::toggleOffline(bool offline)
 {
   if (offline)
   {
-    qDebug() << "going offline";
-    m_map->setBasemap(new Basemap(this));
-    loadBasemaps();
+    // Set the basemap to a null basemap
+    // Use a unique pointer so it will get cleaned up when there are no references to it
+    m_map->setBasemap(std::unique_ptr<Basemap>(new Basemap()).get());
+    // Load the offline base layers from memory
+    loadOfflineBasemaps();
   }
   else
   {
-    qDebug() << "going online";
-    m_map->setBasemap(new Basemap(BasemapStyle::OsmStandard, this));
+    // Set the map to the online basemap
+    m_map->setBasemap(m_basemap);
+
+    // Delete any offline objects
+    delete m_vectorTileCache;
+    delete m_itemResourceCache;
+    delete m_offlineLayer;
+    delete m_exportVectorTilesJob;
+    delete m_exportVectorTilesTask;
   }
 }
 
-void QtAcademyProj::loadBasemaps()
+void QtAcademyProj::loadOfflineBasemaps()
 {
-  QDirIterator dirIterator(vtpkPath, QDir::Dirs | QDir::NoDotAndDotDot);
-  while (dirIterator.hasNext())
+  // Check to see if any offline data exists
+  if (QFile::exists(vtpkPath+"/vectorTiles.vtpk"))
   {
-    QString folderPath = dirIterator.next();
+    // Create a VectorTileCache object from the offline data
+    m_vectorTileCache = new VectorTileCache(vtpkPath+"/vectorTiles.vtpk", this);
 
-    if (QFile::exists(folderPath+"/vectorTiles.vtpk"))
+    // Check to see if any additional item resources exist and use them in the constructor if so
+    if (QFile::exists(vtpkPath+"/itemResources"))
     {
-      VectorTileCache* vectorTileCache = new VectorTileCache(folderPath+"/vectorTiles.vtpk", this);
-      ArcGISVectorTiledLayer* vLayer = nullptr;
-
-      if (QFile::exists(folderPath+"/itemResources"))
-      {
-        ItemResourceCache* itemResourceChache = new ItemResourceCache(folderPath+"/itemResources", this);
-        vLayer = new ArcGISVectorTiledLayer(vectorTileCache, itemResourceChache, this);
-      }
-      else
-      {
-        vLayer = new ArcGISVectorTiledLayer(vectorTileCache, this);
-      }
-
-      connect(vLayer, &ArcGISVectorTiledLayer::doneLoading, this, [=](const Error& loadError)
-      {
-        for (auto l : vLayer->sourceInfo().levelsOfDetail())
-        {
-          qDebug() << l.level() << l.resolution() << l.scale();
-        }
-      });
-
-      m_map->basemap()->baseLayers()->append(vLayer);
+      m_itemResourceCache = new ItemResourceCache(vtpkPath+"/itemResources", this);
+      m_offlineLayer = new ArcGISVectorTiledLayer(m_vectorTileCache, m_itemResourceCache, this);
     }
+    else
+    {
+      m_offlineLayer = new ArcGISVectorTiledLayer(m_vectorTileCache, this);
+    }
+
+    // Add the created ArcGISVectorTileLayer to the base layers
+    m_map->basemap()->baseLayers()->append(m_offlineLayer);
   }
-}
-
-void QtAcademyProj::toggleLocationDisplay()
-{
-  if (!m_mapView)
-    return;
-
-  if (m_mapView->locationDisplay()->isStarted())
-    m_mapView->locationDisplay()->stop();
-  else
-    m_mapView->locationDisplay()->start();
 }
 
 void QtAcademyProj::createOfflineAreaFromExtent()
 {
-  for (Layer* layer : *m_map->basemap()->baseLayers())
+  // Export all available ArcGISVectorTileLayers
+  for (Layer* layer : *(m_basemap->baseLayers()))
   {
     if (ArcGISVectorTiledLayer* vectorTileLayer = dynamic_cast<ArcGISVectorTiledLayer*>(layer))
       exportVectorTiles(vectorTileLayer);
@@ -136,41 +126,41 @@ void QtAcademyProj::createOfflineAreaFromExtent()
 
 void QtAcademyProj::exportVectorTiles(ArcGISVectorTiledLayer* vectorTileLayer)
 {
-  qDebug() << vectorTileLayer->url();
+  // Create a new export task from the layer's source url
   m_exportVectorTilesTask = new ExportVectorTilesTask(vectorTileLayer->url(), this);
 
-  connect(m_exportVectorTilesTask, &ExportVectorTilesTask::errorOccurred, this, [=](Error e)
-  {
-    qDebug() << e.message() << e.additionalMessage();
-  });
-
-  m_exportVectorTilesTask->createDefaultExportVectorTilesParametersAsync(m_mapView->visibleArea(), m_mapView->mapScale()*0.1)
+  // Create default parameters for the layer service
+  // Normalize the central meridian in case the download area crosses the meridian
+  m_exportVectorTilesTask->createDefaultExportVectorTilesParametersAsync(GeometryEngine::normalizeCentralMeridian(m_mapView->visibleArea()), m_mapView->mapScale()*0.1)
       .then(this, [=](ExportVectorTilesParameters defaultParams)
   {
-    qDebug() << defaultParams.maxLevel();
-    const QString newVtpkPath = vtpkPath+"/"+QString::number(QDateTime::currentSecsSinceEpoch());
+    QDir path(vtpkPath);
 
-    QDir().mkdir(newVtpkPath);
+    // Remove any existing offline files
+    path.removeRecursively();
 
-    const QString vtpkFileName = newVtpkPath+"/vectorTiles.vtpk";
-    const QString itemResourcesPath = newVtpkPath+"/itemResources";
+    // Create the directory if it does not already exist
+    if (!QDir().exists(vtpkPath))
+      QDir().mkdir(vtpkPath);
 
-    ExportVectorTilesJob* exportJob = m_exportVectorTilesTask->exportVectorTiles(defaultParams, vtpkFileName, itemResourcesPath);
+    const QString vtpkFileName = vtpkPath+"/vectorTiles.vtpk";
+    const QString itemResourcesPath = vtpkPath+"/itemResources";
 
-    connect(exportJob, &Job::progressChanged, this, [exportJob, vectorTileLayer]()
+    // Create a Job object to manage the export
+    m_exportVectorTilesJob = m_exportVectorTilesTask->exportVectorTiles(defaultParams, vtpkFileName, itemResourcesPath);
+
+    // Monitor the download progress and update the UI every time it changes
+    connect(m_exportVectorTilesJob, &Job::progressChanged, this, [this]()
     {
-      qDebug() << vectorTileLayer->name() << exportJob->progress();
+      m_downloadProgress = m_exportVectorTilesJob->progress();
+      emit downloadProgressChanged();
     });
 
-    connect(exportJob, &Job::statusChanged, this, [exportJob, vectorTileLayer](JobStatus s)
-    {
-      qDebug() << vectorTileLayer->name() << s;
-      qDebug() << exportJob->error().message() << exportJob->error().additionalMessage();
-    });
+    // Display any errors in the console log
+    connect(m_exportVectorTilesJob, &Job::errorOccurred, this, [](const Error& e){qWarning() << e.message() << e.additionalMessage();});
 
-    connect(exportJob, &Job::errorOccurred, this, [](const Error& e){qDebug() << e.message() << e.additionalMessage();});
-
-    exportJob->start();
+    // Once all async slots have been created, start the export
+    m_exportVectorTilesJob->start();
   });
 }
 
@@ -191,17 +181,65 @@ void QtAcademyProj::setMapView(MapQuickView* mapView)
 
   m_mapView->setMap(m_map);
 
-  //m_mapView->setViewpoint(Viewpoint(34.108, -116.918, 50'000));
+  // Start the location display and center the map on the user
+  m_mapView->locationDisplay()->start();
+  m_mapView->locationDisplay()->setAutoPanMode(LocationDisplayAutoPanMode::Recenter);
 
-  connect(m_mapView, &MapQuickView::mouseClicked, this, [=](const QMouseEvent& e)
+  // Allow the user to rotate the map by pinching a touchscreen
+  m_mapView->setRotationByPinchingEnabled(true);
+
+  // Create and add a GraphicsOverlay to display Graphics on the MapView
+  GraphicsOverlay* graphicsOverlay = new GraphicsOverlay(this);
+  m_mapView->graphicsOverlays()->append(graphicsOverlay);
+
+  // Create and add a Graphic to show the user's path
+  m_offlineMapExtentGraphic = new Graphic(this);
+  m_offlineMapExtentGraphic->setSymbol(new SimpleLineSymbol(SimpleLineSymbolStyle::Solid, Qt::blue, 2, this));
+  graphicsOverlay->graphics()->append(m_offlineMapExtentGraphic);
+
+  // Create a PolylineBuilder to construct lines given a set of points
+  m_lineBuilder = new PolylineBuilder(SpatialReference::wgs84(), this);
+
+  // Whenever the user's location changes, update the line path if necessary and recenter the map
+  connect(m_mapView->locationDisplay(), &LocationDisplay::locationChanged, this, [=](const Location& l)
   {
-    qDebug() << this->children().size();
+    if (!m_isTracking)
+      return;
+
+    m_mapView->locationDisplay()->setAutoPanMode(LocationDisplayAutoPanMode::CompassNavigation);
+
+    m_lineBuilder->addPoint(l.position());
+    m_offlineMapExtentGraphic->setGeometry(m_lineBuilder->toGeometry());
   });
 
-  m_map->setMaxExtent(Envelope{});
-  m_map->setMaxScale(0);
-  m_map->setMinScale(0);
-
   emit mapViewChanged();
+}
+
+int QtAcademyProj::downloadProgress()
+{
+  return m_downloadProgress;
+}
+
+bool QtAcademyProj::isTracking() const
+{
+  return m_isTracking;
+}
+
+void QtAcademyProj::setIsTracking(bool value)
+{
+  if (m_isTracking == value)
+    return;
+
+  m_isTracking = value;
+
+  if (m_isTracking)
+  {
+    // Set the map auto pan mode to compass
+    m_mapView->locationDisplay()->setAutoPanMode(LocationDisplayAutoPanMode::CompassNavigation);
+    // Clear any previous track
+    m_offlineMapExtentGraphic->setGeometry({});
+  }
+
+  emit isTrackingChanged();
 }
 

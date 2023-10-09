@@ -75,6 +75,7 @@ private:
   Esri::ArcGISRuntime::PolylineBuilder* m_lineBuilder = nullptr;
   int m_downloadProgress = 0;
   bool m_isTracking = false;
+  std::unique_ptr<QObject> m_tempObject;
 };
 
 #endif // QTACADEMYPROJ_H

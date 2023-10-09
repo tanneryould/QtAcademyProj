@@ -26,29 +26,29 @@
 #include "GraphicsOverlayListModel.h"
 #include "ItemResourceCache.h"
 #include "LayerListModel.h"
+#include "Location.h"
 #include "LocationDisplay.h"
 #include "Map.h"
 #include "MapQuickView.h"
 #include "MapTypes.h"
 #include "MapViewTypes.h"
 #include "OfflineMapTask.h"
+#include "Point.h"
 #include "Polygon.h"
+#include "PolylineBuilder.h"
 #include "SimpleLineSymbol.h"
+#include "SpatialReference.h"
 #include "SymbolTypes.h"
 #include "VectorTileCache.h"
-#include "Location.h"
-#include "Point.h"
-#include "PolylineBuilder.h"
-#include "SpatialReference.h"
 
+#include <QDateTime>
 #include <QDir>
 #include <QDirIterator>
 #include <QFile>
-#include <QDateTime>
-#include <QNetworkInformation>
-
 #include <QFuture>
+#include <QNetworkInformation>
 #include <QStandardPaths>
+
 
 using namespace Esri::ArcGISRuntime;
 
@@ -60,6 +60,7 @@ QtAcademyProj::QtAcademyProj(QObject* parent /* = nullptr */):
   m_basemap(new Basemap(BasemapStyle::OsmStandard, this))
 {
   m_map->setBasemap(m_basemap);
+  m_tempObject.reset(new QObject(this));
 }
 
 QtAcademyProj::~QtAcademyProj()
@@ -72,7 +73,7 @@ void QtAcademyProj::toggleOffline(bool offline)
   {
     // Set the basemap to a null basemap
     // Use a unique pointer so it will get cleaned up when there are no references to it
-    m_map->setBasemap(std::unique_ptr<Basemap>(new Basemap()).get());
+    m_map->setBasemap(new Basemap(m_tempObject.get()));
     // Load the offline base layers from memory
     loadOfflineBasemaps();
   }
@@ -81,12 +82,8 @@ void QtAcademyProj::toggleOffline(bool offline)
     // Set the map to the online basemap
     m_map->setBasemap(m_basemap);
 
-    // Delete any offline objects
-    delete m_vectorTileCache;
-    delete m_itemResourceCache;
-    delete m_offlineLayer;
-    delete m_exportVectorTilesJob;
-    delete m_exportVectorTilesTask;
+    // Delete any offline objects by reseting the parent
+    m_tempObject.reset(new QObject(this));
   }
 }
 
@@ -96,17 +93,17 @@ void QtAcademyProj::loadOfflineBasemaps()
   if (QFile::exists(vtpkPath+"/vectorTiles.vtpk"))
   {
     // Create a VectorTileCache object from the offline data
-    m_vectorTileCache = new VectorTileCache(vtpkPath+"/vectorTiles.vtpk", this);
+    m_vectorTileCache = new VectorTileCache(vtpkPath+"/vectorTiles.vtpk", m_tempObject.get());
 
     // Check to see if any additional item resources exist and use them in the constructor if so
     if (QFile::exists(vtpkPath+"/itemResources"))
     {
-      m_itemResourceCache = new ItemResourceCache(vtpkPath+"/itemResources", this);
-      m_offlineLayer = new ArcGISVectorTiledLayer(m_vectorTileCache, m_itemResourceCache, this);
+      m_itemResourceCache = new ItemResourceCache(vtpkPath+"/itemResources", m_tempObject.get());
+      m_offlineLayer = new ArcGISVectorTiledLayer(m_vectorTileCache, m_itemResourceCache, m_tempObject.get());
     }
     else
     {
-      m_offlineLayer = new ArcGISVectorTiledLayer(m_vectorTileCache, this);
+      m_offlineLayer = new ArcGISVectorTiledLayer(m_vectorTileCache, m_tempObject.get());
     }
 
     // Add the created ArcGISVectorTileLayer to the base layers
@@ -127,7 +124,7 @@ void QtAcademyProj::createOfflineAreaFromExtent()
 void QtAcademyProj::exportVectorTiles(ArcGISVectorTiledLayer* vectorTileLayer)
 {
   // Create a new export task from the layer's source url
-  m_exportVectorTilesTask = new ExportVectorTilesTask(vectorTileLayer->url(), this);
+  m_exportVectorTilesTask = new ExportVectorTilesTask(vectorTileLayer->url(), m_tempObject.get());
 
   // Create default parameters for the layer service
   // Normalize the central meridian in case the download area crosses the meridian
